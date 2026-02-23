@@ -1,0 +1,54 @@
+{
+  "habits": [
+    {
+      "id": 2,
+      "name": "Woke up at 6:30 AM",
+      "icon": "\u2b50",
+      "category": "Wellness",
+      "target_days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "color": "#e6ad2b",
+      "created": "2026-02-22"
+    },
+    {
+      "id": 3,
+      "name": "DSA 2 Problems A day",
+      "icon": "\u2b50",
+      "category": "Learning",
+      "target_days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun"
+      ],
+      "color": "#6c63ff",
+      "created": "2026-02-22"
+    },
+    {
+      "id": 4,
+      "name": "Phone Usage",
+      "icon": "\u2b50",
+      "category": "Productivity",
+      "target_days": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun"
+      ],
+      "color": "#ef3c3f",
+      "created": "2026-02-22"
+    }
+  ],
+  "completions": {}
+}
