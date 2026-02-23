@@ -29,7 +29,7 @@ with st.sidebar:
     st.markdown("### 🧭 Navigation")
     current_tab = st.radio(
         "Menu",
-        ["📅  Today's Dashboard", "📊  History & Filters", "⚙️  Manage Habits"],
+        ["📅  Today's Dashboard", "📊  History & Filters", "💻  DSA Tracker", "⚙️  Manage Habits"],
         label_visibility="collapsed"
     )
 
@@ -192,7 +192,8 @@ DEFAULT_DATA = {
         {"id": 3, "name": "Drink 8 Glasses",  "icon": "💧", "category": "Health", "target_days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], "color": "#06b6d4", "created": str(date.today() - timedelta(days=15))},
         {"id": 4, "name": "Meditate",          "icon": "🧘", "category": "Wellness", "target_days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], "color": "#ec4899", "created": str(date.today() - timedelta(days=10))},
     ],
-    "completions": {}  # {"YYYY-MM-DD": {"habit_id": {"time": "", "mode": "", "notes": "", "helped": ""}}}
+    "completions": {},  # {"YYYY-MM-DD": {"habit_id": {"time": "", "mode": "", "notes": "", "helped": ""}}}
+    "dsa_problems": []  # [{"id": 1, "name": "Two Sum", "url": "https://...", "difficulty": "Easy", "status": "open", "completed_on": None}]
 }
 
 def load_data():
@@ -204,12 +205,16 @@ def load_data():
                 if isinstance(comps, list):
                     data["completions"][day] = {str(hid): {} for hid in comps}
                     migrated = True
+            if "dsa_problems" not in data:
+                data["dsa_problems"] = []
+                migrated = True
             if migrated:
                 save_data(data)
             return data
     # Use default habits but start with no completions
     data = DEFAULT_DATA.copy()
     data["completions"] = {}
+    data["dsa_problems"] = []
     save_data(data)
     return data
 
@@ -710,7 +715,132 @@ elif current_tab == "📊  History & Filters":
 
 
 # ══════════════════════════════════════════════
-# TAB 3 — Manage Habits
+# TAB 3 — DSA Tracker
+# ══════════════════════════════════════════════
+elif current_tab == "💻  DSA Tracker":
+    data = get_data()
+    problems = data.get("dsa_problems", [])
+
+    st.markdown('<div class="section-title">💻 DSA Problem Tracker</div>', unsafe_allow_html=True)
+    st.caption("Track data structures and algorithms problems you are practicing.")
+
+    # Top Stats
+    solved = [p for p in problems if p["status"] == "completed"]
+    easy = len([p for p in solved if p["difficulty"] == "Easy"])
+    med = len([p for p in solved if p["difficulty"] == "Medium"])
+    hard = len([p for p in solved if p["difficulty"] == "Hard"])
+    
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        st.markdown(f'<div class="stat-card"><div class="stat-number" style="color:#6c63ff;">{len(solved)}</div><div class="stat-label">Total Solved</div></div>', unsafe_allow_html=True)
+    with col_s2:
+        st.markdown(f'<div class="stat-card"><div class="stat-number" style="color:#4ade80;">{easy}</div><div class="stat-label">Easy</div></div>', unsafe_allow_html=True)
+    with col_s3:
+        st.markdown(f'<div class="stat-card"><div class="stat-number" style="color:#f7971e;">{med}</div><div class="stat-label">Medium</div></div>', unsafe_allow_html=True)
+    with col_s4:
+        st.markdown(f'<div class="stat-card"><div class="stat-number" style="color:#ef3c3f;">{hard}</div><div class="stat-label">Hard</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # ── Simple form to add a new problem quickly
+    with st.expander("➕ Add New Problem", expanded=False):
+        with st.form("add_dsa_form", clear_on_submit=True):
+            col_a, col_b, col_c = st.columns([3, 1, 1])
+            with col_a: p_name = st.text_input("Problem Name", placeholder="e.g. Two Sum")
+            with col_b: p_diff = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
+            with col_c: 
+                st.markdown("<br>", unsafe_allow_html=True)
+                submit_new = st.form_submit_button("Add Problem", use_container_width=True)
+            p_url = st.text_input("URL (Optional)", placeholder="https://leetcode.com/...")
+            
+            if submit_new:
+                if p_name.strip():
+                    new_id = max((p.get("id", 0) for p in problems), default=0) + 1
+                    problems.append({
+                        "id": new_id,
+                        "name": p_name.strip(),
+                        "url": p_url.strip(),
+                        "difficulty": p_diff,
+                        "status": "open",
+                        "completed_on": None
+                    })
+                    data["dsa_problems"] = problems
+                    save_data(data)
+                    st.rerun()
+                else:
+                    st.error("Problem name is required.")
+
+    st.markdown('<h3 style="margin-top:20px; color:#6c63ff;">📋 Problem Summary</h3>', unsafe_allow_html=True)
+    st.caption("Edit values directly in the table below like an Excel sheet! Check 'Done' to mark as completed, and click a row to delete it by pressing your backspace/delete key.")
+
+    if not problems:
+        st.info("No problems added yet. Add one above!")
+    else:
+        # Prepare dataframe for data_editor
+        df_probs = pd.DataFrame(problems)
+        # Map status to a boolean 'Done' column
+        df_probs['Done'] = df_probs['status'] == 'completed'
+        
+        # Select and reorder columns for display
+        display_cols = ['Done', 'name', 'difficulty', 'url', 'completed_on']
+        df_display = df_probs[display_cols].copy()
+        
+        # Configure column types and names
+        column_config = {
+            "Done": st.column_config.CheckboxColumn("Done?", default=False, width="small"),
+            "name": st.column_config.TextColumn("Problem Name", required=True, width="large"),
+            "difficulty": st.column_config.SelectboxColumn("Difficulty", options=["Easy", "Medium", "Hard"], required=True, width="medium"),
+            "url": st.column_config.LinkColumn("Link", display_text="Open Link", width="medium"),
+            "completed_on": st.column_config.DateColumn("Completed On", disabled=True, width="medium")
+        }
+        
+        # Display the editor
+        edited_df = st.data_editor(
+            df_display, 
+            column_config=column_config, 
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key="dsa_editor"
+        )
+        
+        # Sync back to data dictionary if changes made
+        if not edited_df.equals(df_display):
+            new_problems = []
+            for i, row in edited_df.iterrows():
+                status = "completed" if row['Done'] else "open"
+                
+                # Handling completion date logic
+                comp_date = row.get('completed_on', None)
+                orig_row = df_display.iloc[i] if i < len(df_display) else None
+                
+                if row['Done'] and (orig_row is None or not orig_row['Done']):
+                    # Newly marked as done
+                    comp_date = str(date.today())
+                elif not row['Done']:
+                    # Unchecked
+                    comp_date = None
+                elif pd.isna(comp_date):
+                    comp_date = None
+                else:
+                    comp_date = str(comp_date)
+
+                new_problems.append({
+                    "id": i + 1,
+                    "name": row['name'],
+                    "url": row['url'] if not pd.isna(row['url']) else "",
+                    "difficulty": row['difficulty'],
+                    "status": status,
+                    "completed_on": comp_date
+                })
+            
+            data["dsa_problems"] = new_problems
+            save_data(data)
+            st.rerun()
+
+
+# ══════════════════════════════════════════════
+# TAB 4 — Manage Habits
 # ══════════════════════════════════════════════
 elif current_tab == "⚙️  Manage Habits":
     data = get_data()
