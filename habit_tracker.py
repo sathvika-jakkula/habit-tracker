@@ -243,6 +243,40 @@ def log_habit_dialog(habit_id, day_str, h_name):
         save_data(data)
         st.rerun()
 
+@st.dialog("Confirm Uncheck")
+def confirm_uncheck_dialog(habit_id, day_str, h_name):
+    st.warning(f"Are you sure you want to uncheck **{h_name}** for {day_str}? This will delete the logged details for this day.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Yes, Uncheck", use_container_width=True):
+            remove_completion(habit_id, day_str)
+            st.rerun()
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+
+@st.dialog("Confirm Delete")
+def confirm_delete_dialog(habit_id, h_name):
+    st.warning(f"Are you sure you want to permanently delete **{h_name}** and all its history?")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Yes, Delete", use_container_width=True):
+            data = get_data()
+            h_id_int = int(habit_id)
+            data["habits"] = [h for h in data["habits"] if h["id"] != h_id_int]
+            
+            # Clean up completions
+            hid_str = str(habit_id)
+            for day in data["completions"]:
+                if hid_str in data["completions"][day]:
+                    del data["completions"][day][hid_str]
+                    
+            save_data(data)
+            st.rerun()
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+
 def remove_completion(habit_id, day_str):
     data = get_data()
     hid = str(habit_id)
@@ -400,8 +434,7 @@ if current_tab == "📅  Today's Dashboard":
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("✅" if done else "⬜", key=f"toggle_{h['id']}_{today_str}", help="Toggle"):
                     if done:
-                        remove_completion(h["id"], today_str)
-                        st.rerun()
+                        confirm_uncheck_dialog(h["id"], today_str, h["name"])
                     else:
                         log_habit_dialog(h["id"], today_str, h["name"])
 
@@ -760,9 +793,7 @@ elif current_tab == "⚙️  Manage Habits":
                 with col_del:
                     st.markdown("<br><br>", unsafe_allow_html=True)
                     if st.button("🗑️", key=f"del_{h['id']}", help="Delete habit"):
-                        habits.remove(h)
-                        save_data(data)
-                        st.rerun()
+                        confirm_delete_dialog(h["id"], h["name"])
 
         # ── Reset data
         st.markdown("<br>", unsafe_allow_html=True)
