@@ -11,6 +11,10 @@ import plotly.express as px
 from datetime import date, timedelta, datetime
 import json
 import os
+try:
+    from streamlit_gsheets import GSheetsConnection
+except ImportError:
+    GSheetsConnection = None
 
 # ─────────────────────────────────────────────
 # Config & Page Setup
@@ -196,7 +200,71 @@ DEFAULT_DATA = {
     "dsa_problems": []  # [{"id": 1, "name": "Two Sum", "url": "https://...", "difficulty": "Easy", "status": "open", "completed_on": None}]
 }
 
+def get_gsheets_conn():
+    if GSheetsConnection is None:
+        return None
+    try:
+        # Avoid crashing if secrets are unconfigured by checking secrets keys
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            return st.connection("gsheets", type=GSheetsConnection)
+    except Exception:
+        pass
+    return None
+
 def load_data():
+    conn = get_gsheets_conn()
+    if conn is not None:
+        try:
+            habits_df = conn.read(worksheet="habits")
+            completions_df = conn.read(worksheet="completions")
+            dsa_df = conn.read(worksheet="dsa_problems")
+
+            # Parse habits
+            habits = []
+            if not habits_df.empty:
+                for _, row in habits_df.iterrows():
+                    if pd.isna(row.get("id")): continue # Skip empty rows
+                    h = row.to_dict()
+                    h["target_days"] = str(h["target_days"]).split(",") if pd.notna(h.get("target_days")) and h["target_days"] else []
+                    h["id"] = int(h["id"])
+                    if pd.isna(h.get("icon")): h["icon"] = "⭐"
+                    habits.append(h)
+
+            # Parse completions
+            completions = {}
+            if not completions_df.empty:
+                for _, row in completions_df.iterrows():
+                    d = str(row["date"])
+                    if pd.isna(row.get("habit_id")) or d == "nan": continue
+                    hid = str(int(row["habit_id"])) if isinstance(row["habit_id"], float) else str(row["habit_id"])
+                    
+                    if d not in completions:
+                        completions[d] = {}
+                    completions[d][hid] = {
+                        "duration": str(row["duration"]) if pd.notna(row.get("duration")) else "",
+                        "mode": str(row["mode"]) if pd.notna(row.get("mode")) else "",
+                        "notes": str(row["notes"]) if pd.notna(row.get("notes")) else "",
+                        "helped": str(row["helped"]) if pd.notna(row.get("helped")) else ""
+                    }
+
+            # Parse DSA
+            dsa = []
+            if not dsa_df.empty:
+                for _, row in dsa_df.iterrows():
+                    if pd.isna(row.get("id")): continue
+                    p = row.to_dict()
+                    p["id"] = int(p["id"])
+                    if pd.isna(p.get("url")): p["url"] = ""
+                    if pd.isna(p.get("completed_on")): p["completed_on"] = None
+                    dsa.append(p)
+            
+            return {"habits": habits, "completions": completions, "dsa_problems": dsa}
+            
+        except Exception as e:
+            st.warning(f"Google Sheets connection issue: {e}. Falling back to local JSON storage.")
+            pass # Fallback to JSON below
+            
+    # --- FALLBACK: Load from local JSON ---
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             data = json.load(f)
@@ -211,14 +279,59 @@ def load_data():
             if migrated:
                 save_data(data)
             return data
+            
     # Use default habits but start with no completions
     data = DEFAULT_DATA.copy()
     data["completions"] = {}
     data["dsa_problems"] = []
+    # Save it first
     save_data(data)
     return data
 
 def save_data(data):
+    conn = get_gsheets_conn()
+    if conn is not None:
+        try:
+            # Prepare Habits DF
+            habits_list = []
+            for h in data.get("habits", []):
+                h_copy = h.copy()
+                h_copy["target_days"] = ",".join(h.get("target_days", []))
+                habits_list.append(h_copy)
+            habits_df = pd.DataFrame(habits_list)
+
+            # Prepare Completions DF
+            comp_list = []
+            for day, day_comps in data.get("completions", {}).items():
+                for hid, detail in day_comps.items():
+                    comp_list.append({
+                        "date": day,
+                        "habit_id": hid,
+                        "duration": detail.get("duration", ""),
+                        "mode": detail.get("mode", ""),
+                        "notes": detail.get("notes", ""),
+                        "helped": detail.get("helped", "")
+                    })
+            completions_df = pd.DataFrame(comp_list)
+
+            # Prepare DSA DF
+            dsa_df = pd.DataFrame(data.get("dsa_problems", []))
+
+            # Update Google Sheets (Clear previous content implicitly with empty dfs if needed)
+            # The library can occasionally struggle with empty dataframes without columns, so ensure structure
+            if habits_df.empty: habits_df = pd.DataFrame(columns=["id", "name", "icon", "category", "target_days", "color", "created"])
+            if completions_df.empty: completions_df = pd.DataFrame(columns=["date", "habit_id", "duration", "mode", "notes", "helped"])
+            if dsa_df.empty: dsa_df = pd.DataFrame(columns=["id", "name", "url", "difficulty", "status", "completed_on"])
+
+            # It takes time to write, but we push updates
+            conn.update(worksheet="habits", data=habits_df)
+            conn.update(worksheet="completions", data=completions_df)
+            conn.update(worksheet="dsa_problems", data=dsa_df)
+            
+        except Exception as e:
+            pass # Fails silently if GSheets is problematic and saves locally instead
+
+    # Backup / local persistence
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
