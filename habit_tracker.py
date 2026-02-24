@@ -384,13 +384,26 @@ def get_data():
 
 @st.dialog("Log Habit Details", width="large")
 def log_habit_dialog(habit_id, day_str, h_name):
+    data = get_data()
+    existing = data.get("completions", {}).get(day_str, {}).get(str(habit_id), {})
+    
     st.markdown(f"#### Logging details for **{h_name}** on {day_str}")
-    duration_val = st.selectbox("Duration", ["< 15 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "1.5 hours", "2+ hours"], index=1)
+    
+    dur_opts = ["< 15 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "1.5 hours", "2+ hours"]
+    d_idx = dur_opts.index(existing.get("duration", "15 minutes")) if existing.get("duration", "15 minutes") in dur_opts else 1
+    duration_val = st.selectbox("Duration", dur_opts, index=d_idx)
+    
     st.markdown("**How did it feel?**")
     emoji_modes = ["😭", "😟", "😐", "🙂", "😄", "🚀"]
-    mode_val = st.radio("Mode", emoji_modes, index=3, horizontal=True, label_visibility="collapsed")
-    notes_val = st.text_area("Notes", placeholder="How did it go?")
-    helped_val = st.selectbox("Did it help you?", ["Yes", "No", "Not sure"])
+    m_idx = emoji_modes.index(existing.get("mode", "🙂")) if existing.get("mode", "🙂") in emoji_modes else 3
+    mode_val = st.radio("Mode", emoji_modes, index=m_idx, horizontal=True, label_visibility="collapsed")
+    
+    notes_val = st.text_area("Notes", value=existing.get("notes", ""), placeholder="How did it go?")
+    
+    h_opts = ["Yes", "No", "Not sure"]
+    h_idx = h_opts.index(existing.get("helped", "Yes")) if existing.get("helped", "Yes") in h_opts else 0
+    helped_val = st.selectbox("Did it help you?", h_opts, index=h_idx)
+    
     if st.button("Save", use_container_width=True):
         data = get_data()
         hid = str(habit_id)
@@ -510,6 +523,20 @@ st.markdown(f"<p style='text-align:center; color:{t_text_muted}; margin-bottom:2
 # ══════════════════════════════════════════════
 if current_tab == "📅  Today's Dashboard":
     data = get_data()
+    
+    # ── Handle inline edit links from the HTML badges
+    if "edit_habit" in st.query_params and "edit_date" in st.query_params:
+        e_id_str = st.query_params["edit_habit"]
+        e_date = st.query_params["edit_date"]
+        e_name = "Habit"
+        for h in data.get("habits", []):
+            if str(h["id"]) == e_id_str:
+                e_name = h["name"]
+                break
+        del st.query_params["edit_habit"]
+        del st.query_params["edit_date"]
+        log_habit_dialog(int(e_id_str), e_date, e_name)
+    
     habits = data["habits"]
     today_str = str(date.today())
     today_completions = data["completions"].get(today_str, {})
@@ -601,7 +628,8 @@ if current_tab == "📅  Today's Dashboard":
                         log_habit_dialog(h["id"], today_str, h["name"])
 
             with col_info:
-                badge = '<span class="done-badge">✓ Done</span>' if done else '<span class="pending-badge">Pending</span>'
+                edit_html = f'<a href="?edit_habit={h["id"]}&edit_date={today_str}" target="_self" style="text-decoration:none; background:{t_card_bg2}; border:1px solid {t_card_border}; padding:2px 6px; border-radius:12px; font-size:0.75rem; color:{t_text_muted}; margin-left:4px;" title="Edit Log Details">✏️ Edit</a>' if done else ''
+                badge = f'<span class="done-badge">✓ Done</span>{edit_html}' if done else '<span class="pending-badge">Pending</span>'
                 streak_html = f'<span class="streak-badge">🔥 {streak} day streak</span>' if streak > 0 else ''
                 
                 details_html = ""
