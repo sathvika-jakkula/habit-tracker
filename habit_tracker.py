@@ -181,11 +181,6 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────
-# Data Persistence (JSON file)
-# ─────────────────────────────────────────────
-DATA_FILE = "habit_data.json"
-
 DEFAULT_DATA = {
     "habits": [
         {"id": 1, "name": "Morning Workout", "icon": "💪", "category": "Health", "target_days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], "color": "#6c63ff", "created": str(date.today() - timedelta(days=30))},
@@ -273,35 +268,14 @@ def load_data():
             return {"habits": habits, "completions": completions, "dsa_problems": dsa, "daily_notes": daily_notes}
             
         except Exception as e:
-            st.warning(f"Database connection issue: {e}. Falling back to local JSON storage.")
-            pass # Fallback to JSON below
-            
-    # --- FALLBACK: Load from local JSON ---
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            data = json.load(f)
-            migrated = False
-            for day, comps in data.get("completions", {}).items():
-                if isinstance(comps, list):
-                    data["completions"][day] = {str(hid): {} for hid in comps}
-                    migrated = True
-            if "dsa_problems" not in data:
-                data["dsa_problems"] = []
-                migrated = True
-            if "daily_notes" not in data:
-                data["daily_notes"] = []
-                migrated = True
-            if migrated:
-                save_data(data)
-            return data
+            st.warning(f"Database connection issue: {e}. Please check your connection.")
+            return DEFAULT_DATA.copy()
             
     # Use default habits but start with no completions
     data = DEFAULT_DATA.copy()
     data["completions"] = {}
     data["dsa_problems"] = []
     data["daily_notes"] = []
-    # Save it first
-    save_data(data)
     return data
 
 def save_data(data):
@@ -346,11 +320,7 @@ def save_data(data):
             if notes_list: db.daily_notes.insert_many(notes_list)
             
         except Exception as e:
-            pass # Fails silently if DB is problematic and saves locally instead
-
-    # Backup / local persistence
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+            st.error(f"Failed to save to MongoDB: {e}")
 
 def get_data():
     if "data" not in st.session_state:
@@ -1090,11 +1060,13 @@ elif current_tab == "⚙️  Manage Habits":
         with st.expander("⚠️ Danger Zone"):
             st.warning("This will delete ALL habits and history permanently.")
             if st.button("🔴 Reset All Data", type="secondary"):
-                if os.path.exists(DATA_FILE):
-                    os.remove(DATA_FILE)
+                db = get_db_conn()
+                if db is not None:
+                    db.habits.delete_many({})
+                    db.completions.delete_many({})
+                    db.dsa_problems.delete_many({})
+                    db.daily_notes.delete_many({})
                 st.session_state.clear()
-                st.rerun()
-
                 st.rerun()
 
 # ══════════════════════════════════════════════
@@ -1186,5 +1158,5 @@ elif current_tab == "📝  Daily Notes":
 st.markdown(f"""
 <hr style="border-color:{t_card_border}; margin-top:40px;">
 <p style="text-align:center; color:{t_text_muted}; font-size:0.8rem;">
-    🏆 Habit Tracker &nbsp;•&nbsp; Built with Streamlit &nbsp;•&nbsp; Data saved locally as habit_data.json
+    🏆 Habit Tracker &nbsp;•&nbsp; Built with Streamlit &nbsp;•&nbsp; Data securely connected to MongoDB Server
 </p>""", unsafe_allow_html=True)
