@@ -11,10 +11,7 @@ import plotly.express as px
 from datetime import date, timedelta, datetime
 import json
 import os
-try:
-    from streamlit_gsheets import GSheetsConnection
-except ImportError:
-    GSheetsConnection = None
+from sqlalchemy import text
 
 # ─────────────────────────────────────────────
 # Config & Page Setup
@@ -201,25 +198,68 @@ DEFAULT_DATA = {
     "daily_notes": []   # [{"date": "YYYY-MM-DD", "note": "..."}]
 }
 
-def get_gsheets_conn():
-    if GSheetsConnection is None:
-        return None
+def get_db_conn():
     try:
-        # Avoid crashing if secrets are unconfigured by checking secrets keys
-        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            return st.connection("gsheets", type=GSheetsConnection)
+        if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
+            return st.connection("postgres", type="sql", ttl=0)
     except Exception:
         pass
     return None
 
-def load_data():
-    conn = get_gsheets_conn()
-    if conn is not None:
-        try:
-            habits_df = conn.read(worksheet="habits", ttl=0)
-            completions_df = conn.read(worksheet="completions", ttl=0)
-            dsa_df = conn.read(worksheet="dsa_problems", ttl=0)
+def init_db(conn):
+    try:
+        with conn.session as s:
+            s.execute(text('''
+                CREATE TABLE IF NOT EXISTS habits (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    icon TEXT,
+                    category TEXT,
+                    target_days TEXT,
+                    color TEXT,
+                    created TEXT
+                )
+            '''))
+            s.execute(text('''
+                CREATE TABLE IF NOT EXISTS completions (
+                    date TEXT,
+                    habit_id TEXT,
+                    duration TEXT,
+                    mode TEXT,
+                    notes TEXT,
+                    helped TEXT,
+                    PRIMARY KEY (date, habit_id)
+                )
+            '''))
+            s.execute(text('''
+                CREATE TABLE IF NOT EXISTS dsa_problems (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    url TEXT,
+                    difficulty TEXT,
+                    status TEXT,
+                    completed_on TEXT
+                )
+            '''))
+            s.execute(text('''
+                CREATE TABLE IF NOT EXISTS daily_notes (
+                    date TEXT PRIMARY KEY,
+                    note TEXT
+                )
+            '''))
+            s.commit()
+    except Exception as e:
+        pass
 
+def load_data():
+    conn = get_db_conn()
+    if conn is not None:
+        init_db(conn)
+        try:
+            habits_df = conn.query("SELECT * FROM habits", ttl=0)
+            completions_df = conn.query("SELECT * FROM completions", ttl=0)
+            dsa_df = conn.query("SELECT * FROM dsa_problems", ttl=0)
+            
             # Parse habits
             habits = []
             if not habits_df.empty:
@@ -262,7 +302,7 @@ def load_data():
             # Parse Daily Notes
             daily_notes = []
             try:
-                notes_df = conn.read(worksheet="daily_notes", ttl=0)
+                notes_df = conn.query("SELECT * FROM daily_notes", ttl=0)
                 if not notes_df.empty:
                     for _, row in notes_df.iterrows():
                         if pd.isna(row.get("date")): continue
@@ -271,12 +311,12 @@ def load_data():
                             "note": str(row["note"]) if pd.notna(row.get("note")) else ""
                         })
             except Exception:
-                pass # Accept missing worksheet temporarily for backward compatibility
+                pass
             
             return {"habits": habits, "completions": completions, "dsa_problems": dsa, "daily_notes": daily_notes}
             
         except Exception as e:
-            st.warning(f"Google Sheets connection issue: {e}. Falling back to local JSON storage.")
+            st.warning(f"Database connection issue: {e}. Falling back to local JSON storage.")
             pass # Fallback to JSON below
             
     # --- FALLBACK: Load from local JSON ---
@@ -308,7 +348,7 @@ def load_data():
     return data
 
 def save_data(data):
-    conn = get_gsheets_conn()
+    conn = get_db_conn()
     if conn is not None:
         try:
             # Prepare Habits DF
@@ -339,39 +379,27 @@ def save_data(data):
             # Prepare Daily Notes DF
             notes_df = pd.DataFrame(data.get("daily_notes", []))
 
-            # Update Google Sheets (Clear previous content implicitly with empty dfs if needed)
-            # The library can occasionally struggle with empty dataframes without columns, so ensure structure
             if habits_df.empty: habits_df = pd.DataFrame(columns=["id", "name", "icon", "category", "target_days", "color", "created"])
             if completions_df.empty: completions_df = pd.DataFrame(columns=["date", "habit_id", "duration", "mode", "notes", "helped"])
             if dsa_df.empty: dsa_df = pd.DataFrame(columns=["id", "name", "url", "difficulty", "status", "completed_on"])
             if notes_df.empty: notes_df = pd.DataFrame(columns=["date", "note"])
 
-            # Clear existing sheets to prevent orphaned data rows when our dataset shrinks (e.g., when unchecking a habit)
-            try:
-                if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-                    url = st.secrets["connections"]["gsheets"].get("spreadsheet")
-                    if url:
-                        spreadsheet = conn.client._client.open_by_url(url)
-                        for ws_name in ["habits", "completions", "dsa_problems", "daily_notes"]:
-                            try:
-                                spreadsheet.worksheet(ws_name).clear()
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-
-            # It takes time to write, but we push updates
-            conn.update(worksheet="habits", data=habits_df)
-            conn.update(worksheet="completions", data=completions_df)
-            conn.update(worksheet="dsa_problems", data=dsa_df)
+            # Sync by completely replacing tables
+            # SQLAlchemy connection handles this gracefully with Pandas
+            with conn.session as s:
+                s.execute(text("DELETE FROM habits"))
+                s.execute(text("DELETE FROM completions"))
+                s.execute(text("DELETE FROM dsa_problems"))
+                s.execute(text("DELETE FROM daily_notes"))
+                s.commit()
             
-            try:
-                conn.update(worksheet="daily_notes", data=notes_df)
-            except Exception:
-                pass # Don't completely fail saving if user forgot to create the 4th tab yet!
+            habits_df.to_sql("habits", con=conn.engine, if_exists="append", index=False)
+            completions_df.to_sql("completions", con=conn.engine, if_exists="append", index=False)
+            dsa_df.to_sql("dsa_problems", con=conn.engine, if_exists="append", index=False)
+            notes_df.to_sql("daily_notes", con=conn.engine, if_exists="append", index=False)
             
         except Exception as e:
-            pass # Fails silently if GSheets is problematic and saves locally instead
+            pass # Fails silently if DB is problematic and saves locally instead
 
     # Backup / local persistence
     with open(DATA_FILE, "w") as f:
