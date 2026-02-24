@@ -33,7 +33,7 @@ with st.sidebar:
     st.markdown("### 🧭 Navigation")
     current_tab = st.radio(
         "Menu",
-        ["📅  Today's Dashboard", "📊  History & Filters", "💻  DSA Tracker", "⚙️  Manage Habits"],
+        ["📅  Today's Dashboard", "📊  History & Filters", "💻  DSA Tracker", "📝  Daily Notes", "⚙️  Manage Habits"],
         label_visibility="collapsed"
     )
 
@@ -197,7 +197,8 @@ DEFAULT_DATA = {
         {"id": 4, "name": "Meditate",          "icon": "🧘", "category": "Wellness", "target_days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], "color": "#ec4899", "created": str(date.today() - timedelta(days=10))},
     ],
     "completions": {},  # {"YYYY-MM-DD": {"habit_id": {"time": "", "mode": "", "notes": "", "helped": ""}}}
-    "dsa_problems": []  # [{"id": 1, "name": "Two Sum", "url": "https://...", "difficulty": "Easy", "status": "open", "completed_on": None}]
+    "dsa_problems": [], # [{"id": 1, "name": "Two Sum", "url": "https://...", "difficulty": "Easy", "status": "open", "completed_on": None}]
+    "daily_notes": []   # [{"date": "YYYY-MM-DD", "note": "..."}]
 }
 
 def get_gsheets_conn():
@@ -215,9 +216,9 @@ def load_data():
     conn = get_gsheets_conn()
     if conn is not None:
         try:
-            habits_df = conn.read(worksheet="habits")
-            completions_df = conn.read(worksheet="completions")
-            dsa_df = conn.read(worksheet="dsa_problems")
+            habits_df = conn.read(worksheet="habits", ttl=0)
+            completions_df = conn.read(worksheet="completions", ttl=0)
+            dsa_df = conn.read(worksheet="dsa_problems", ttl=0)
 
             # Parse habits
             habits = []
@@ -257,8 +258,22 @@ def load_data():
                     if pd.isna(p.get("url")): p["url"] = ""
                     if pd.isna(p.get("completed_on")): p["completed_on"] = None
                     dsa.append(p)
+
+            # Parse Daily Notes
+            daily_notes = []
+            try:
+                notes_df = conn.read(worksheet="daily_notes", ttl=0)
+                if not notes_df.empty:
+                    for _, row in notes_df.iterrows():
+                        if pd.isna(row.get("date")): continue
+                        daily_notes.append({
+                            "date": str(row["date"]),
+                            "note": str(row["note"]) if pd.notna(row.get("note")) else ""
+                        })
+            except Exception:
+                pass # Accept missing worksheet temporarily for backward compatibility
             
-            return {"habits": habits, "completions": completions, "dsa_problems": dsa}
+            return {"habits": habits, "completions": completions, "dsa_problems": dsa, "daily_notes": daily_notes}
             
         except Exception as e:
             st.warning(f"Google Sheets connection issue: {e}. Falling back to local JSON storage.")
@@ -276,6 +291,9 @@ def load_data():
             if "dsa_problems" not in data:
                 data["dsa_problems"] = []
                 migrated = True
+            if "daily_notes" not in data:
+                data["daily_notes"] = []
+                migrated = True
             if migrated:
                 save_data(data)
             return data
@@ -284,6 +302,7 @@ def load_data():
     data = DEFAULT_DATA.copy()
     data["completions"] = {}
     data["dsa_problems"] = []
+    data["daily_notes"] = []
     # Save it first
     save_data(data)
     return data
@@ -317,16 +336,39 @@ def save_data(data):
             # Prepare DSA DF
             dsa_df = pd.DataFrame(data.get("dsa_problems", []))
 
+            # Prepare Daily Notes DF
+            notes_df = pd.DataFrame(data.get("daily_notes", []))
+
             # Update Google Sheets (Clear previous content implicitly with empty dfs if needed)
             # The library can occasionally struggle with empty dataframes without columns, so ensure structure
             if habits_df.empty: habits_df = pd.DataFrame(columns=["id", "name", "icon", "category", "target_days", "color", "created"])
             if completions_df.empty: completions_df = pd.DataFrame(columns=["date", "habit_id", "duration", "mode", "notes", "helped"])
             if dsa_df.empty: dsa_df = pd.DataFrame(columns=["id", "name", "url", "difficulty", "status", "completed_on"])
+            if notes_df.empty: notes_df = pd.DataFrame(columns=["date", "note"])
+
+            # Clear existing sheets to prevent orphaned data rows when our dataset shrinks (e.g., when unchecking a habit)
+            try:
+                if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+                    url = st.secrets["connections"]["gsheets"].get("spreadsheet")
+                    if url:
+                        spreadsheet = conn.client._client.open_by_url(url)
+                        for ws_name in ["habits", "completions", "dsa_problems", "daily_notes"]:
+                            try:
+                                spreadsheet.worksheet(ws_name).clear()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
 
             # It takes time to write, but we push updates
             conn.update(worksheet="habits", data=habits_df)
             conn.update(worksheet="completions", data=completions_df)
             conn.update(worksheet="dsa_problems", data=dsa_df)
+            
+            try:
+                conn.update(worksheet="daily_notes", data=notes_df)
+            except Exception:
+                pass # Don't completely fail saving if user forgot to create the 4th tab yet!
             
         except Exception as e:
             pass # Fails silently if GSheets is problematic and saves locally instead
@@ -344,7 +386,9 @@ def get_data():
 def log_habit_dialog(habit_id, day_str, h_name):
     st.markdown(f"#### Logging details for **{h_name}** on {day_str}")
     duration_val = st.selectbox("Duration", ["< 15 minutes", "15 minutes", "30 minutes", "45 minutes", "1 hour", "1.5 hours", "2+ hours"], index=1)
-    mode_val = st.text_input("Mode", placeholder="e.g. Intensive, Light, Focused, etc.")
+    st.markdown("**How did it feel?**")
+    emoji_modes = ["😭", "😟", "😐", "🙂", "😄", "🚀"]
+    mode_val = st.radio("Mode", emoji_modes, index=3, horizontal=True, label_visibility="collapsed")
     notes_val = st.text_area("Notes", placeholder="How did it go?")
     helped_val = st.selectbox("Did it help you?", ["Yes", "No", "Not sure"])
     if st.button("Save", use_container_width=True):
@@ -1047,6 +1091,91 @@ elif current_tab == "⚙️  Manage Habits":
                     os.remove(DATA_FILE)
                 st.session_state.clear()
                 st.rerun()
+
+                st.rerun()
+
+# ══════════════════════════════════════════════
+# TAB 5 — Daily Notes
+# ══════════════════════════════════════════════
+elif current_tab == "📝  Daily Notes":
+    data = get_data()
+    notes = data.get("daily_notes", [])
+    
+    st.markdown('<div class="section-title">📝 Daily Notes & Reflections</div>', unsafe_allow_html=True)
+    st.caption("Jot down your thoughts, challenges, or highlights for the day.")
+
+    c_left, c_right = st.columns([1, 1.3])
+
+    with c_left:
+        st.markdown('<h3 style="margin-top:0px; color:#6c63ff;">Write Note</h3>', unsafe_allow_html=True)
+        # Select Date
+        selected_date = st.date_input("Select Date", value=date.today(), max_value=date.today())
+        date_str = str(selected_date)
+
+        # Pre-fill if note exists
+        existing_note = ""
+        for n in notes:
+            if n["date"] == date_str:
+                existing_note = n["note"]
+                break
+                
+        with st.form("daily_note_form", clear_on_submit=False):
+            note_content = st.text_area("Your Reflections", value=existing_note, height=250, placeholder="How was your day? Did you struggle with any habits? What went well?")
+            submit_btn = st.form_submit_button("Save Note", use_container_width=True)
+            
+            if submit_btn:
+                # Update existing or add new
+                found = False
+                for n in notes:
+                    if n["date"] == date_str:
+                        n["note"] = note_content
+                        found = True
+                        break
+                if not found:
+                    notes.append({"date": date_str, "note": note_content})
+                
+                data["daily_notes"] = notes
+                save_data(data)
+                st.success("Note saved successfully!")
+                st.rerun()
+
+    with c_right:
+        st.markdown('<h3 style="margin-top:0px; color:#a78bfa;">📜 Past Notes</h3>', unsafe_allow_html=True)
+        
+        # Display past notes (excluding the currently selected date if we want, or just show all sorted)
+        sorted_notes = sorted(notes, key=lambda x: x["date"], reverse=True)
+        
+        if not sorted_notes:
+            st.info("No daily notes written yet.")
+        else:
+            # Add a small text filter
+            search_q = st.text_input("Search notes...", placeholder="Keywords...")
+            
+            for n in sorted_notes:
+                # Apply filter
+                if search_q and search_q.lower() not in n["note"].lower():
+                    continue
+                    
+                # Format the date nicely
+                try:
+                    display_date = datetime.strptime(n['date'], "%Y-%m-%d").strftime("%B %d, %Y")
+                except:
+                    display_date = n['date']
+                    
+                # Highlight if it's today
+                is_today = n['date'] == str(date.today())
+                border_color = "#6c63ff" if is_today else t_card_border
+                bg_color = t_card_bg1 if is_today else t_card_bg2
+                
+                st.markdown(f"""
+                <div style="background:{bg_color}; border:1px solid {border_color}; border-radius:10px; padding:16px; margin-bottom:12px;">
+                    <div style="font-size:0.85rem; color:{t_text_muted}; margin-bottom:8px; font-weight:600;">
+                        🗓️ {display_date} {"(Today)" if is_today else ""}
+                    </div>
+                    <div style="white-space: pre-wrap; line-height: 1.5;">{n['note']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
 
 # ─────────────────────────────────────────────
 # Footer
