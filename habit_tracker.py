@@ -11,7 +11,7 @@ import plotly.express as px
 from datetime import date, timedelta, datetime
 import json
 import os
-from sqlalchemy import text
+import pymongo
 
 # ─────────────────────────────────────────────
 # Config & Page Setup
@@ -198,118 +198,75 @@ DEFAULT_DATA = {
     "daily_notes": []   # [{"date": "YYYY-MM-DD", "note": "..."}]
 }
 
+@st.cache_resource
 def get_db_conn():
     try:
-        if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
-            return st.connection("postgres", type="sql", ttl=0)
+        if "connections" in st.secrets and "mongo" in st.secrets["connections"]:
+            if "url" in st.secrets["connections"]["mongo"]:
+                client = pymongo.MongoClient(st.secrets["connections"]["mongo"]["url"])
+                return client.tracker
     except Exception:
         pass
     return None
 
-def init_db(conn):
-    try:
-        with conn.session as s:
-            s.execute(text('''
-                CREATE TABLE IF NOT EXISTS habits (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT,
-                    icon TEXT,
-                    category TEXT,
-                    target_days TEXT,
-                    color TEXT,
-                    created TEXT
-                )
-            '''))
-            s.execute(text('''
-                CREATE TABLE IF NOT EXISTS completions (
-                    date TEXT,
-                    habit_id TEXT,
-                    duration TEXT,
-                    mode TEXT,
-                    notes TEXT,
-                    helped TEXT,
-                    PRIMARY KEY (date, habit_id)
-                )
-            '''))
-            s.execute(text('''
-                CREATE TABLE IF NOT EXISTS dsa_problems (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT,
-                    url TEXT,
-                    difficulty TEXT,
-                    status TEXT,
-                    completed_on TEXT
-                )
-            '''))
-            s.execute(text('''
-                CREATE TABLE IF NOT EXISTS daily_notes (
-                    date TEXT PRIMARY KEY,
-                    note TEXT
-                )
-            '''))
-            s.commit()
-    except Exception as e:
-        pass
+def init_db(db):
+    pass
 
 def load_data():
-    conn = get_db_conn()
-    if conn is not None:
-        init_db(conn)
+    db = get_db_conn()
+    if db is not None:
         try:
-            habits_df = conn.query("SELECT * FROM habits", ttl=0)
-            completions_df = conn.query("SELECT * FROM completions", ttl=0)
-            dsa_df = conn.query("SELECT * FROM dsa_problems", ttl=0)
+            habits_data = list(db.habits.find({}, {"_id": 0}))
+            completions_data = list(db.completions.find({}, {"_id": 0}))
+            dsa_data = list(db.dsa_problems.find({}, {"_id": 0}))
             
             # Parse habits
             habits = []
-            if not habits_df.empty:
-                for _, row in habits_df.iterrows():
-                    if pd.isna(row.get("id")): continue # Skip empty rows
-                    h = row.to_dict()
-                    h["target_days"] = str(h["target_days"]).split(",") if pd.notna(h.get("target_days")) and h["target_days"] else []
-                    h["id"] = int(h["id"])
-                    if pd.isna(h.get("icon")): h["icon"] = "⭐"
-                    habits.append(h)
+            for h in habits_data:
+                if not h.get("id"): continue
+                if "target_days" in h and isinstance(h["target_days"], str) and h["target_days"]:
+                    h["target_days"] = h["target_days"].split(",")
+                elif "target_days" not in h:
+                    h["target_days"] = []
+                h["id"] = int(h["id"])
+                if not h.get("icon"): h["icon"] = "⭐"
+                habits.append(h)
 
             # Parse completions
             completions = {}
-            if not completions_df.empty:
-                for _, row in completions_df.iterrows():
-                    d = str(row["date"])
-                    if pd.isna(row.get("habit_id")) or d == "nan": continue
-                    hid = str(int(row["habit_id"])) if isinstance(row["habit_id"], float) else str(row["habit_id"])
-                    
-                    if d not in completions:
-                        completions[d] = {}
-                    completions[d][hid] = {
-                        "duration": str(row["duration"]) if pd.notna(row.get("duration")) else "",
-                        "mode": str(row["mode"]) if pd.notna(row.get("mode")) else "",
-                        "notes": str(row["notes"]) if pd.notna(row.get("notes")) else "",
-                        "helped": str(row["helped"]) if pd.notna(row.get("helped")) else ""
-                    }
+            for row in completions_data:
+                d = str(row.get("date", ""))
+                hid = str(row.get("habit_id", ""))
+                if not d or not hid: continue
+                
+                if d not in completions:
+                    completions[d] = {}
+                completions[d][hid] = {
+                    "duration": str(row.get("duration", "")),
+                    "mode": str(row.get("mode", "")),
+                    "notes": str(row.get("notes", "")),
+                    "helped": str(row.get("helped", ""))
+                }
 
             # Parse DSA
             dsa = []
-            if not dsa_df.empty:
-                for _, row in dsa_df.iterrows():
-                    if pd.isna(row.get("id")): continue
-                    p = row.to_dict()
-                    p["id"] = int(p["id"])
-                    if pd.isna(p.get("url")): p["url"] = ""
-                    if pd.isna(p.get("completed_on")): p["completed_on"] = None
-                    dsa.append(p)
+            for p in dsa_data:
+                if not p.get("id"): continue
+                p["id"] = int(p["id"])
+                if not p.get("url"): p["url"] = ""
+                if "completed_on" not in p: p["completed_on"] = None
+                dsa.append(p)
 
             # Parse Daily Notes
             daily_notes = []
             try:
-                notes_df = conn.query("SELECT * FROM daily_notes", ttl=0)
-                if not notes_df.empty:
-                    for _, row in notes_df.iterrows():
-                        if pd.isna(row.get("date")): continue
-                        daily_notes.append({
-                            "date": str(row["date"]),
-                            "note": str(row["note"]) if pd.notna(row.get("note")) else ""
-                        })
+                notes_data = list(db.daily_notes.find({}, {"_id": 0}))
+                for row in notes_data:
+                    if not row.get("date"): continue
+                    daily_notes.append({
+                        "date": str(row["date"]),
+                        "note": str(row.get("note", ""))
+                    })
             except Exception:
                 pass
             
@@ -348,18 +305,18 @@ def load_data():
     return data
 
 def save_data(data):
-    conn = get_db_conn()
-    if conn is not None:
+    db = get_db_conn()
+    if db is not None:
         try:
-            # Prepare Habits DF
+            # Prepare Habits list
             habits_list = []
             for h in data.get("habits", []):
-                h_copy = h.copy()
-                h_copy["target_days"] = ",".join(h.get("target_days", []))
+                h_copy = dict(h)
+                if isinstance(h_copy.get("target_days"), list):
+                    h_copy["target_days"] = ",".join(h_copy["target_days"])
                 habits_list.append(h_copy)
-            habits_df = pd.DataFrame(habits_list)
 
-            # Prepare Completions DF
+            # Prepare Completions list
             comp_list = []
             for day, day_comps in data.get("completions", {}).items():
                 for hid, detail in day_comps.items():
@@ -371,32 +328,22 @@ def save_data(data):
                         "notes": detail.get("notes", ""),
                         "helped": detail.get("helped", "")
                     })
-            completions_df = pd.DataFrame(comp_list)
 
-            # Prepare DSA DF
-            dsa_df = pd.DataFrame(data.get("dsa_problems", []))
+            # Prepare DSA list
+            dsa_list = data.get("dsa_problems", [])
 
-            # Prepare Daily Notes DF
-            notes_df = pd.DataFrame(data.get("daily_notes", []))
+            # Prepare Daily Notes list
+            notes_list = data.get("daily_notes", [])
 
-            if habits_df.empty: habits_df = pd.DataFrame(columns=["id", "name", "icon", "category", "target_days", "color", "created"])
-            if completions_df.empty: completions_df = pd.DataFrame(columns=["date", "habit_id", "duration", "mode", "notes", "helped"])
-            if dsa_df.empty: dsa_df = pd.DataFrame(columns=["id", "name", "url", "difficulty", "status", "completed_on"])
-            if notes_df.empty: notes_df = pd.DataFrame(columns=["date", "note"])
-
-            # Sync by completely replacing tables
-            # SQLAlchemy connection handles this gracefully with Pandas
-            with conn.session as s:
-                s.execute(text("DELETE FROM habits"))
-                s.execute(text("DELETE FROM completions"))
-                s.execute(text("DELETE FROM dsa_problems"))
-                s.execute(text("DELETE FROM daily_notes"))
-                s.commit()
+            db.habits.delete_many({})
+            db.completions.delete_many({})
+            db.dsa_problems.delete_many({})
+            db.daily_notes.delete_many({})
             
-            habits_df.to_sql("habits", con=conn.engine, if_exists="append", index=False)
-            completions_df.to_sql("completions", con=conn.engine, if_exists="append", index=False)
-            dsa_df.to_sql("dsa_problems", con=conn.engine, if_exists="append", index=False)
-            notes_df.to_sql("daily_notes", con=conn.engine, if_exists="append", index=False)
+            if habits_list: db.habits.insert_many(habits_list)
+            if comp_list: db.completions.insert_many(comp_list)
+            if dsa_list: db.dsa_problems.insert_many(dsa_list)
+            if notes_list: db.daily_notes.insert_many(notes_list)
             
         except Exception as e:
             pass # Fails silently if DB is problematic and saves locally instead
