@@ -195,20 +195,23 @@ DEFAULT_DATA = {
 
 @st.cache_resource
 def get_db_conn():
-    try:
-        if "connections" in st.secrets and "mongo" in st.secrets["connections"]:
-            if "url" in st.secrets["connections"]["mongo"]:
-                client = pymongo.MongoClient(st.secrets["connections"]["mongo"]["url"])
-                return client.tracker
-    except Exception:
-        pass
-    return None
+    if "connections" in st.secrets and "mongo" in st.secrets["connections"]:
+        if "url" in st.secrets["connections"]["mongo"]:
+            url = st.secrets["connections"]["mongo"]["url"]
+            client = pymongo.MongoClient(url, serverSelectionTimeoutMS=5000, connectTimeoutMS=10000)
+            client.admin.command('ping')
+            return client.tracker
+    raise Exception("Could not connect to MongoDB or missing credentials in st.secrets")
 
 def init_db(db):
     pass
 
 def load_data():
-    db = get_db_conn()
+    try:
+        db = get_db_conn()
+    except Exception as e:
+        st.warning(f"Database connection issue: {e}. Starting in offline mode.")
+        db = None
     if db is not None:
         try:
             habits_data = list(db.habits.find({}, {"_id": 0}))
@@ -279,7 +282,14 @@ def load_data():
     return data
 
 def save_data(data):
-    db = get_db_conn()
+    try:
+        db = get_db_conn()
+    except Exception as e:
+        import traceback
+        st.error(f"Failed to connect to MongoDB: {e}")
+        print(f"MongoDB Connection Error: {traceback.format_exc()}")
+        return False
+
     if db is not None:
         try:
             # Prepare Habits list
@@ -309,6 +319,11 @@ def save_data(data):
             # Prepare Daily Notes list
             notes_list = data.get("daily_notes", [])
 
+            print(f"DEBUG: Saving Habits - {len(habits_list)} items")
+            print(f"DEBUG: Saving Completions - {len(comp_list)} items")
+            print(f"DEBUG: Saving DSA - {len(dsa_list)} items")
+            print(f"DEBUG: Saving Notes - {len(notes_list)} items")
+
             db.habits.delete_many({})
             db.completions.delete_many({})
             db.dsa_problems.delete_many({})
@@ -318,9 +333,19 @@ def save_data(data):
             if comp_list: db.completions.insert_many(comp_list)
             if dsa_list: db.dsa_problems.insert_many(dsa_list)
             if notes_list: db.daily_notes.insert_many(notes_list)
+
+            # Update session state to match saved data
+            st.session_state.data = data
+            
+            print("DEBUG: Save Complete!")
+            return True
             
         except Exception as e:
+            import traceback
             st.error(f"Failed to save to MongoDB: {e}")
+            print(f"MongoDB Save Error: {traceback.format_exc()}")
+            return False
+    return False
 
 def get_data():
     if "data" not in st.session_state:
@@ -360,8 +385,8 @@ def log_habit_dialog(habit_id, day_str, h_name):
             "notes": notes_val,
             "helped": helped_val
         }
-        save_data(data)
-        st.rerun()
+        if save_data(data):
+            st.rerun()
 
 @st.dialog("Confirm Uncheck")
 def confirm_uncheck_dialog(habit_id, day_str, h_name):
@@ -369,8 +394,8 @@ def confirm_uncheck_dialog(habit_id, day_str, h_name):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Yes, Uncheck", use_container_width=True):
-            remove_completion(habit_id, day_str)
-            st.rerun()
+            if remove_completion(habit_id, day_str):
+                st.rerun()
     with col2:
         if st.button("Cancel", use_container_width=True):
             st.rerun()
@@ -391,8 +416,8 @@ def confirm_delete_dialog(habit_id, h_name):
                 if hid_str in data["completions"][day]:
                     del data["completions"][day][hid_str]
                     
-            save_data(data)
-            st.rerun()
+            if save_data(data):
+                st.rerun()
     with col2:
         if st.button("Cancel", use_container_width=True):
             st.rerun()
@@ -402,7 +427,8 @@ def remove_completion(habit_id, day_str):
     hid = str(habit_id)
     if day_str in data["completions"] and hid in data["completions"][day_str]:
         del data["completions"][day_str][hid]
-        save_data(data)
+        return save_data(data)
+    return True
 
 def is_done(habit_id, day_str):
     data = get_data()
@@ -895,8 +921,8 @@ elif current_tab == "💻  DSA Tracker":
                         "completed_on": None
                     })
                     data["dsa_problems"] = problems
-                    save_data(data)
-                    st.rerun()
+                    if save_data(data):
+                        st.rerun()
                 else:
                     st.error("Problem name is required.")
 
@@ -965,8 +991,8 @@ elif current_tab == "💻  DSA Tracker":
                 })
             
             data["dsa_problems"] = new_problems
-            save_data(data)
-            st.rerun()
+            if save_data(data):
+                st.rerun()
 
 
 # ══════════════════════════════════════════════
@@ -1007,9 +1033,9 @@ elif current_tab == "⚙️  Manage Habits":
                         "color": new_color,
                         "created": str(date.today()),
                     })
-                    save_data(data)
-                    st.success(f"✅ '{new_name}' added!")
-                    st.rerun()
+                    if save_data(data):
+                        st.success(f"✅ '{new_name}' added!")
+                        st.rerun()
                 else:
                     st.error("Please enter a habit name.")
 
@@ -1110,9 +1136,9 @@ elif current_tab == "📝  Daily Notes":
                     notes.append({"date": date_str, "note": note_content})
                 
                 data["daily_notes"] = notes
-                save_data(data)
-                st.success("Note saved successfully!")
-                st.rerun()
+                if save_data(data):
+                    st.success("Note saved successfully!")
+                    st.rerun()
 
     with c_right:
         st.markdown('<h3 style="margin-top:0px; color:#a78bfa;">📜 Past Notes</h3>', unsafe_allow_html=True)
