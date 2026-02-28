@@ -189,7 +189,7 @@ DEFAULT_DATA = {
         {"id": 4, "name": "Meditate",          "icon": "🧘", "category": "Wellness", "target_days": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], "color": "#ec4899", "created": str(date.today() - timedelta(days=10))},
     ],
     "completions": {},  # {"YYYY-MM-DD": {"habit_id": {"time": "", "mode": "", "notes": "", "helped": ""}}}
-    "dsa_problems": [], # [{"id": 1, "name": "Two Sum", "url": "https://...", "difficulty": "Easy", "status": "open", "completed_on": None}]
+    "dsa_problems": [], # [{"id": 1, "topic": "Array", "name": "Two Sum", "url": "https://...", "difficulty": "Easy", "status": "open", "completed_on": None}]
     "daily_notes": []   # [{"date": "YYYY-MM-DD", "note": "..."}]
 }
 
@@ -251,6 +251,7 @@ def load_data():
             for p in dsa_data:
                 if not p.get("id"): continue
                 p["id"] = int(p["id"])
+                if not p.get("topic"): p["topic"] = ""
                 if not p.get("url"): p["url"] = ""
                 if "completed_on" not in p: p["completed_on"] = None
                 dsa.append(p)
@@ -901,10 +902,11 @@ elif current_tab == "💻  DSA Tracker":
     # ── Simple form to add a new problem quickly
     with st.expander("➕ Add New Problem", expanded=False):
         with st.form("add_dsa_form", clear_on_submit=True):
-            col_a, col_b, col_c = st.columns([3, 1, 1])
+            col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
             with col_a: p_name = st.text_input("Problem Name", placeholder="e.g. Two Sum")
-            with col_b: p_diff = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
-            with col_c: 
+            with col_b: p_topic = st.text_input("Topic", placeholder="e.g. Array")
+            with col_c: p_diff = st.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
+            with col_d: 
                 st.markdown("<br>", unsafe_allow_html=True)
                 submit_new = st.form_submit_button("Add Problem", use_container_width=True)
             p_url = st.text_input("URL (Optional)", placeholder="https://leetcode.com/...")
@@ -914,6 +916,7 @@ elif current_tab == "💻  DSA Tracker":
                     new_id = max((p.get("id", 0) for p in problems), default=0) + 1
                     problems.append({
                         "id": new_id,
+                        "topic": p_topic.strip(),
                         "name": p_name.strip(),
                         "url": p_url.strip(),
                         "difficulty": p_diff,
@@ -938,14 +941,15 @@ elif current_tab == "💻  DSA Tracker":
         df_probs['Done'] = df_probs['status'] == 'completed'
         
         # Select and reorder columns for display
-        display_cols = ['Done', 'name', 'difficulty', 'url', 'completed_on']
+        display_cols = ['Done', 'topic', 'name', 'difficulty', 'url', 'completed_on']
         df_display = df_probs[display_cols].copy()
         
         # Configure column types and names
         column_config = {
             "Done": st.column_config.CheckboxColumn("Done?", default=False, width="small"),
+            "topic": st.column_config.TextColumn("Topic", required=False, width="medium"),
             "name": st.column_config.TextColumn("Problem Name", required=True, width="large"),
-            "difficulty": st.column_config.SelectboxColumn("Difficulty", options=["Easy", "Medium", "Hard"], required=True, width="medium"),
+            "difficulty": st.column_config.SelectboxColumn("Difficulty", options=["Easy", "Medium", "Hard"], required=True, width="small"),
             "url": st.column_config.LinkColumn("Link", display_text="Open Link", width="medium"),
             "completed_on": st.column_config.DateColumn("Completed On", disabled=True, width="medium")
         }
@@ -983,6 +987,7 @@ elif current_tab == "💻  DSA Tracker":
 
                 new_problems.append({
                     "id": i + 1,
+                    "topic": row.get('topic', '') if not pd.isna(row.get('topic')) else "",
                     "name": row['name'],
                     "url": row['url'] if not pd.isna(row['url']) else "",
                     "difficulty": row['difficulty'],
